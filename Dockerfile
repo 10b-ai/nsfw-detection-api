@@ -28,4 +28,4 @@ RUN pip install --upgrade pip && \
 COPY ./app ./app
 
 # Run with optimized settings for CPU
-CMD ["hypercorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "4"]
+CMD ["hypercorn", "app.main:app", "-b", "[::]:8080", "-w", "4"]
