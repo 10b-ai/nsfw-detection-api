@@ -1,8 +1,9 @@
 {
+  "$schema": "https://railway.app/railway.schema.json",
   "build": {
-    "env": {
-      "PORT": "8080"
-    }
+    "builder": "NIXPACKS"
   },
-  "start": "hypercorn app.main:app --bind \"[::]:8080\""
+  "deploy": {
+    "startCommand": "hypercorn main:app --bind \"[::]:$PORT\""
+  }
 }
