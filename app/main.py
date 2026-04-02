@@ -1,11 +1,14 @@
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 import torch
 import io
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
+from urllib.parse import urlparse
+
+import httpx
 
 app = FastAPI()
 
@@ -49,6 +52,9 @@ model = load_optimized_model()
 processor = AutoImageProcessor.from_pretrained(model_id, use_fast=False)
 logger.info("Model and processor loaded successfully")
 
+REMOTE_IMAGE_TIMEOUT = 10.0
+MAX_REMOTE_IMAGE_SIZE = 10 * 1024 * 1024
+
 @torch.no_grad()  # Disable gradient calculation during inference
 def classify_image(image: Image.Image) -> Dict[str, float]:
     """Classify the input image and return prediction scores."""
@@ -70,13 +76,62 @@ def classify_image(image: Image.Image) -> Dict[str, float]:
         logger.error(f"Error during image classification: {e}")
         raise
 
+
+def validate_remote_image_url(image_url: str) -> None:
+    """Ensure the remote image URL uses http/https."""
+    parsed = urlparse(image_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="image_url must be a valid http or https URL")
+
+
+async def load_image_from_upload(image: UploadFile) -> Image.Image:
+    """Load and normalize an uploaded image file."""
+    contents = await image.read()
+    return Image.open(io.BytesIO(contents)).convert("RGB")
+
+
+async def load_image_from_url(image_url: str) -> Image.Image:
+    """Download, validate, and load a remote image."""
+    validate_remote_image_url(image_url)
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=REMOTE_IMAGE_TIMEOUT) as client:
+            response = await client.get(image_url)
+            response.raise_for_status()
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=408, detail="Timed out while downloading image_url") from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to download image_url: upstream returned {exc.response.status_code}",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=400, detail="Failed to download image_url") from exc
+
+    if len(response.content) > MAX_REMOTE_IMAGE_SIZE:
+        raise HTTPException(status_code=413, detail="Remote image is too large")
+
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type and not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="image_url did not return an image resource")
+
+    try:
+        return Image.open(io.BytesIO(response.content)).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Downloaded content is not a valid image") from exc
+
 @app.post("/detect")
-async def detect(image: UploadFile = File(...), threshold: float = Form(0.7)) -> Dict[str, Any]:
+async def detect(
+    image: Optional[UploadFile] = File(None),
+    image_url: Optional[str] = Form(None),
+    threshold: float = Form(0.7),
+) -> Dict[str, Any]:
     """
     Endpoint to detect NSFW content in an uploaded image.
 
     Parameters:
-    - image (UploadFile): The image file to be analyzed.
+    - image (UploadFile): The uploaded image file to be analyzed.
+    - image_url (str): A remote image URL to be analyzed.
     - threshold (float): The confidence threshold for determining NSFW content.
 
     Returns:
@@ -84,8 +139,16 @@ async def detect(image: UploadFile = File(...), threshold: float = Form(0.7)) ->
             and a boolean indicating if the content is NSFW.
     """
     try:
-        contents = await image.read()
-        img = Image.open(io.BytesIO(contents)).convert("RGB")
+        if bool(image) == bool(image_url):
+            raise HTTPException(
+                status_code=400,
+                detail="Provide exactly one of image or image_url",
+            )
+
+        if image is not None:
+            img = await load_image_from_upload(image)
+        else:
+            img = await load_image_from_url(image_url)
         
         scores = classify_image(img)
         
@@ -105,6 +168,8 @@ async def detect(image: UploadFile = File(...), threshold: float = Form(0.7)) ->
             },
             "nsfw": is_nsfw
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing request: {e}")
-        raise
+        raise HTTPException(status_code=400, detail="Unable to process image") from e

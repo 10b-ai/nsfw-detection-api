@@ -39,12 +39,12 @@ docker run -p 8080:8080 nsfw-detection-api
 
 ### `POST /detect`
 
-Accepts an image file via **multipart upload** and an optional threshold.
+Accepts either an uploaded image file or a remote image URL, plus an optional threshold.
 
 #### 📥 Request
 
 - `Content-Type`: `multipart/form-data`
-- Field: `image`
+- Field: `image` or `image_url` (provide exactly one)
 - Optional Field: `threshold` (float, default: `0.7`)
 
 #### Example with `curl`
@@ -52,6 +52,14 @@ Accepts an image file via **multipart upload** and an optional threshold.
 ```bash
 curl -X POST "http://localhost:8080/detect" \
      -F "image=@/path/to/image.jpg" \
+     -F "threshold=0.7"
+```
+
+#### Example with remote image URL
+
+```bash
+curl -X POST "http://localhost:8080/detect" \
+     -F "image_url=https://example.com/image.jpg" \
      -F "threshold=0.7"
 ```
 
