@@ -13,7 +13,7 @@ ENV TORCH_NUM_THREADS=8
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
-    libgl1-mesa-glx \
+    libglx-mesa0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
